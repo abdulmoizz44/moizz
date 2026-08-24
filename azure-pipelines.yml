@@ -1,0 +1,176 @@
+# Customer Code Sync — POC pipeline (Azure DevOps)
+#
+# On merge to a tracked branch, filters the Tenx primary repo (repo A) with the
+# blocklist in .customer-sync-ignore and pushes a snapshot to the customer repo
+# (repo B) on the SAME branch.
+#
+# Setup before first run:
+#   1. Create a variable group named "customer-sync" with a secret variable
+#      TARGET_PAT = a GitHub PAT (repo scope) that can push to
+#      github.com/Dayone-Tenx/codesync.
+#   2. (Optional) Override 'committerEmail' below with your fixed sync identity.
+
+parameters:
+  # Team-member dropdown. Selecting a member sets BOTH the commit name and
+  # email (mapped in the "Filter + sync" step below). To add/remove members,
+  # edit this list AND the matching case block further down — keep them in sync.
+  - name: committer
+    displayName: "Who is committing to the customer repo?"
+    type: string
+    default: "Auto (same as source commit)"
+    values:
+      - "Auto (same as source commit)"   # inherit the triggering commit's author
+      - "Abdul Basit"
+      - "Team Member 2"      # TODO: replace with real name
+      - "Team Member 3"      # TODO: replace with real name
+      - "Custom (type name + email below)"
+  # Used ONLY when 'Custom' is selected above; ignored for named members.
+  - name: customName
+    displayName: "Custom committer name (only if 'Custom' selected)"
+    type: string
+    default: " "
+  - name: customEmail
+    displayName: "Custom committer email (only if 'Custom' selected)"
+    type: string
+    default: " "
+  - name: targetRepo
+    displayName: "Customer repo (host/path.git, no https://)"
+    type: string
+    default: "github.com:abdulmoizz44/clientt.git"
+  - name: allowedBranches
+    displayName: "Branches allowed to sync (comma-separated)"
+    type: string
+    default: "main,develop"
+  - name: commitMessage
+    displayName: "Commit message for the customer repo"
+    type: string
+    default: "Auto (same as source commit)"
+  - name: commitBody
+    displayName: "Commit body / description (optional)"
+    type: string
+    default: " "
+
+# Automatic sync. Every push/merge to these branches triggers a run, and the
+# customer-repo commit INHERITS the source commit's author + message by default
+# (see the 'Auto (same as source commit)' defaults above). The dev team does
+# nothing extra — they just commit to repo A as usual.
+#
+# The committer/message parameters still let you override manually if you ever
+# queue a run by hand. Set 'trigger: none' to disable automatic sync entirely.
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pr: none  # never run on PRs
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: customer-sync            # provides TARGET_PAT (secret)
+
+steps:
+  - checkout: self
+    clean: true
+    persistCredentials: false
+
+  # ---- Branch gate: refuse to sync any branch not on the allowlist ----
+  # trigger.branches only controls AUTO-runs; a manual run can be queued on
+  # any branch. This gate re-verifies at run time and fails closed.
+  - bash: |
+      set -euo pipefail
+      REF="$BUILD_SOURCEBRANCH"
+      BRANCH="${REF#refs/heads/}"
+      echo "Full ref     : $REF"
+      echo "Resolved branch: $BRANCH"
+
+      # Reject anything that is not a plain branch ref (e.g. tags: refs/tags/*).
+      if [ "$BRANCH" = "$REF" ]; then
+        echo "##vso[task.logissue type=error]'$REF' is not a branch ref. Refusing to sync."
+        exit 1
+      fi
+
+      ALLOWED="${{ parameters.allowedBranches }}"
+      echo "Allowed list : $ALLOWED"
+      MATCH=0
+      IFS=',' read -ra LIST <<< "$ALLOWED"
+      for b in "${LIST[@]}"; do
+        b="$(echo "$b" | xargs)"          # trim surrounding whitespace
+        [ -z "$b" ] && continue
+        if [ "$BRANCH" = "$b" ]; then MATCH=1; break; fi
+      done
+
+      if [ "$MATCH" -ne 1 ]; then
+        echo "##vso[task.logissue type=error]Branch '$BRANCH' is not on the allowed sync list ($ALLOWED). Refusing to sync (fail closed)."
+        exit 1
+      fi
+      echo "Branch '$BRANCH' is approved for sync."
+    displayName: "Verify branch (gate)"
+
+  # ---- Stage 2 in the architecture doc: build + test gate ----
+  # Exports only run on a green build. Replace with your real build/test.
+  - bash: |
+      set -euo pipefail
+      echo "Build + test (POC placeholder) — passing."
+    displayName: "Build + test (gate)"
+
+  # ---- Stage 3: filter + push to the customer repo ----
+  - bash: |
+      set -euo pipefail
+      BRANCH="${BUILD_SOURCEBRANCH#refs/heads/}"
+      echo "Source branch resolved to: $BRANCH"
+      export SOURCE_DIR="$BUILD_SOURCESDIRECTORY"
+      export BRANCH
+
+      # Map the selected team member -> name + email. Keep in sync with the
+      # 'committer' parameter values above. Unknown member => fail closed.
+      case "${{ parameters.committer }}" in
+        "Auto (same as source commit)")
+          # Inherit the triggering commit's author (name + email) from repo A.
+          COMMITTER_NAME="$(git -C "$SOURCE_DIR" log -1 --format='%an')"
+          COMMITTER_EMAIL="$(git -C "$SOURCE_DIR" log -1 --format='%ae')"
+          if [ -z "$COMMITTER_NAME" ] || [ -z "$COMMITTER_EMAIL" ]; then
+            echo "##vso[task.logissue type=error]Could not read author from the source commit. Refusing to sync."
+            exit 1
+          fi ;;
+        "Abdul Basit")   COMMITTER_NAME="Abdul Basit";   COMMITTER_EMAIL="abdulbasit@tenx.ai" ;;
+        "Team Member 2") COMMITTER_NAME="Team Member 2"; COMMITTER_EMAIL="member2@tenx.ai" ;;  # TODO
+        "Team Member 3") COMMITTER_NAME="Team Member 3"; COMMITTER_EMAIL="member3@tenx.ai" ;;  # TODO
+        "Custom (type name + email below)")
+          COMMITTER_NAME="$(echo "${{ parameters.customName }}" | xargs)"    # trim
+          COMMITTER_EMAIL="$(echo "${{ parameters.customEmail }}" | xargs)"
+          if [ -z "$COMMITTER_NAME" ] || [ -z "$COMMITTER_EMAIL" ]; then
+            echo "##vso[task.logissue type=error]Custom committer selected but name/email is empty. Refusing to sync."
+            exit 1
+          fi
+          case "$COMMITTER_EMAIL" in
+            *@*.*) : ;;
+            *) echo "##vso[task.logissue type=error]Custom email '$COMMITTER_EMAIL' is not a valid address. Refusing to sync."; exit 1 ;;
+          esac ;;
+        *)
+          echo "##vso[task.logissue type=error]Unknown committer '${{ parameters.committer }}'. Refusing to sync."
+          exit 1 ;;
+      esac
+      export COMMITTER_NAME COMMITTER_EMAIL
+      echo "Committing as: $COMMITTER_NAME <$COMMITTER_EMAIL>"
+
+      export TARGET_REMOTE="https://$(TARGET_PAT)@${{ parameters.targetRepo }}"
+
+      # Commit message: 'Auto' => copy the source commit's full message verbatim
+      # (%B includes subject + body). Otherwise use the typed message + body.
+      if [ "${{ parameters.commitMessage }}" = "Auto (same as source commit)" ]; then
+        COMMIT_MESSAGE="$(git -C "$SOURCE_DIR" log -1 --format='%B')"
+        COMMIT_BODY=""
+      else
+        COMMIT_MESSAGE="${{ parameters.commitMessage }}"
+        COMMIT_BODY="${{ parameters.commitBody }}"
+      fi
+      export COMMIT_MESSAGE COMMIT_BODY
+
+      chmod +x scripts/customer-sync.sh
+      bash scripts/customer-sync.sh
+    displayName: "Filter + sync to customer repo"
+    env:
+      TARGET_PAT: $(TARGET_PAT)   # keep the secret out of the command line

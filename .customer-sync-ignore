@@ -1,0 +1,19 @@
+# Blocklist — paths that NEVER leave the Tenx primary repo.
+# Uses rsync exclude-pattern syntax (trailing slash = directory).
+# Everything NOT listed here is synced to the customer repo.
+
+# Internal specs and design docs
+specs/
+
+# Internal planning file
+planfile
+
+# Never sync repo/CI internals
+.git/
+.claude/
+.gitignore
+.customer-sync-ignore
+azure-pipelines.yml
+scripts/
+ADO-GitSync.html
+MD/
