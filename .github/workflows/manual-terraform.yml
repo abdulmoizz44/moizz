@@ -3,20 +3,26 @@ name: Manual Terraform
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: "Environment to run Terraform against"
+        required: true
+        type: choice
+        options:
+          - dev
+          - uat
+          - prod
       terraform_command:
         description: "Terraform command to run, for example: terraform plan"
         required: true
-        type: string
-      working_directory:
-        description: "Directory containing Terraform files"
-        required: false
-        default: "."
         type: string
 
 jobs:
   terraform:
     name: Run Terraform Command
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      TF_WORKING_DIR: environments/${{ inputs.environment }}
 
     steps:
       - name: Checkout repository
@@ -26,9 +32,9 @@ jobs:
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform init
-        working-directory: ${{ inputs.working_directory }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init
 
       - name: Run Terraform command
-        working-directory: ${{ inputs.working_directory }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
         run: ${{ inputs.terraform_command }}
